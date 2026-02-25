@@ -274,6 +274,21 @@
         return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
       }
 
+      async function apiFetchJson(url, options) {
+        const res = await fetch(url, options);
+        const raw = await res.text();
+        let data = null;
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch (_err) {
+          data = { error: `接口返回非 JSON（HTTP ${res.status}）`, raw };
+        }
+        if (!res.ok) {
+          throw new Error(data.error || `请求失败（HTTP ${res.status}）`);
+        }
+        return data;
+      }
+
       function setCreateMode() {
         editingCode = '';
         editState.textContent = '';
@@ -290,9 +305,7 @@
 
       async function startEdit(code) {
         try {
-          const res = await fetch(`/api/get?code=${encodeURIComponent(code)}`);
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || '加载失败');
+          const data = await apiFetchJson(`/api/get?code=${encodeURIComponent(code)}`);
 
           document.getElementById('format').value = data.format;
           document.getElementById('content').value = data.content;
@@ -311,12 +324,10 @@
 
         mineMsg.textContent = '删除中...';
         try {
-          const res = await fetch(`/api/delete?code=${encodeURIComponent(code)}`, {
+          await apiFetchJson(`/.netlify/functions/delete-clipboard?code=${encodeURIComponent(code)}`, {
             method: 'DELETE',
             headers: authHeaders()
           });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || '删除失败');
 
           if (editingCode === code) {
             setCreateMode();
@@ -341,9 +352,7 @@
         mineList.innerHTML = '';
 
         try {
-          const res = await fetch('/api/my', { headers: authHeaders() });
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || '加载失败');
+          const data = await apiFetchJson('/api/my', { headers: authHeaders() });
 
           if (!data.items.length) {
             mineMsg.textContent = '你还没有发布过云剪贴板';
@@ -403,9 +412,7 @@
 
       async function initAuth() {
         try {
-          const confRes = await fetch('/api/config');
-          const conf = await confRes.json();
-          if (!confRes.ok) throw new Error(conf.error || '配置加载失败');
+          const conf = await apiFetchJson('/api/config');
 
           supabaseClient = window.supabase.createClient(conf.supabaseUrl, conf.supabasePublishableKey);
 
@@ -494,26 +501,21 @@
 
         try {
           if (editingCode) {
-            const res = await fetch('/api/update', {
+            const data = await apiFetchJson('/.netlify/functions/update-clipboard', {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json', ...authHeaders() },
               body: JSON.stringify({ code: editingCode, content, format })
             });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || '更新失败');
 
             codeWrap.style.display = 'none';
             publishMsg.textContent = `更新成功: ${data.item.code}`;
             loadMyClipboards();
           } else {
-            const res = await fetch('/api/create', {
+            const data = await apiFetchJson('/api/create', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', ...authHeaders() },
               body: JSON.stringify({ content, format })
             });
-
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || '发布失败');
 
             codeBox.textContent = data.code;
             codeWrap.style.display = 'block';
@@ -540,9 +542,7 @@
         render.innerHTML = '';
 
         try {
-          const res = await fetch(`/api/get?code=${encodeURIComponent(code)}`);
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || '加载失败');
+          const data = await apiFetchJson(`/api/get?code=${encodeURIComponent(code)}`);
 
           renderContent(data.content, data.format);
           meta.textContent = `格式: ${data.format} | 创建时间: ${new Date(data.created_at).toLocaleString()}`;
