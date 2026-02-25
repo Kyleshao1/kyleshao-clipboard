@@ -1,0 +1,16 @@
+{
+  "name": "cloud-clipboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "netlify dev",
+    "build": "echo 'No build step required'"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.8"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.38.0"
+  }
+}

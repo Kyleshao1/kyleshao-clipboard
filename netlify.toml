@@ -1,0 +1,23 @@
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+[[redirects]]
+  from = "/api/create"
+  to = "/.netlify/functions/create-clipboard"
+  status = 200
+
+[[redirects]]
+  from = "/api/get"
+  to = "/.netlify/functions/get-clipboard"
+  status = 200
+
+[[redirects]]
+  from = "/api/my"
+  to = "/.netlify/functions/my-clipboards"
+  status = 200
+
+[[redirects]]
+  from = "/api/config"
+  to = "/.netlify/functions/public-config"
+  status = 200
