@@ -195,6 +195,7 @@
       let supabaseClient = null;
       let accessToken = '';
       let editingCode = '';
+      let mineLoadSeq = 0;
 
       const authMsg = document.getElementById('authMsg');
       const authUser = document.getElementById('authUser');
@@ -281,12 +282,24 @@
         try {
           data = raw ? JSON.parse(raw) : {};
         } catch (_err) {
-          data = { error: `接口返回非 JSON（HTTP ${res.status}）`, raw };
+          data = { error: `接口返回非 JSON（HTTP ${res.status}）: ${url}`, raw };
         }
         if (!res.ok) {
-          throw new Error(data.error || `请求失败（HTTP ${res.status}）`);
+          throw new Error(data.error || `请求失败（HTTP ${res.status}）: ${url}`);
         }
         return data;
+      }
+
+      async function apiFetchJsonWithFallback(urls, options) {
+        let lastError = null;
+        for (const url of urls) {
+          try {
+            return await apiFetchJson(url, options);
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        throw lastError || new Error('请求失败');
       }
 
       function setCreateMode() {
@@ -324,10 +337,16 @@
 
         mineMsg.textContent = '删除中...';
         try {
-          await apiFetchJson(`/.netlify/functions/delete-clipboard?code=${encodeURIComponent(code)}`, {
-            method: 'DELETE',
-            headers: authHeaders()
-          });
+          await apiFetchJsonWithFallback(
+            [
+              `/api/delete?code=${encodeURIComponent(code)}`,
+              `/.netlify/functions/delete-clipboard?code=${encodeURIComponent(code)}`
+            ],
+            {
+              method: 'DELETE',
+              headers: authHeaders()
+            }
+          );
 
           if (editingCode === code) {
             setCreateMode();
@@ -342,6 +361,7 @@
       }
 
       async function loadMyClipboards() {
+        const seq = ++mineLoadSeq;
         if (!accessToken) {
           myWrap.style.display = 'none';
           return;
@@ -353,6 +373,7 @@
 
         try {
           const data = await apiFetchJson('/api/my', { headers: authHeaders() });
+          if (seq !== mineLoadSeq) return;
 
           if (!data.items.length) {
             mineMsg.textContent = '你还没有发布过云剪贴板';
@@ -392,6 +413,7 @@
             mineList.appendChild(div);
           });
         } catch (err) {
+          if (seq !== mineLoadSeq) return;
           mineMsg.textContent = err.message;
         }
       }
@@ -501,11 +523,14 @@
 
         try {
           if (editingCode) {
-            const data = await apiFetchJson('/.netlify/functions/update-clipboard', {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json', ...authHeaders() },
-              body: JSON.stringify({ code: editingCode, content, format })
-            });
+            const data = await apiFetchJsonWithFallback(
+              ['/api/update', '/.netlify/functions/update-clipboard'],
+              {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                body: JSON.stringify({ code: editingCode, content, format })
+              }
+            );
 
             codeWrap.style.display = 'none';
             publishMsg.textContent = `更新成功: ${data.item.code}`;
