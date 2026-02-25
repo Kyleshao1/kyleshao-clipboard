@@ -21,3 +21,13 @@
   from = "/api/config"
   to = "/.netlify/functions/public-config"
   status = 200
+
+[[redirects]]
+  from = "/api/update"
+  to = "/.netlify/functions/update-clipboard"
+  status = 200
+
+[[redirects]]
+  from = "/api/delete"
+  to = "/.netlify/functions/delete-clipboard"
+  status = 200
