@@ -79,6 +79,12 @@
         border-radius: 10px;
         min-height: 100px;
       }
+      .preview-title {
+        margin-top: 12px;
+        margin-bottom: 8px;
+        font-size: 13px;
+        color: var(--muted);
+      }
       .list-item {
         border: 1px solid var(--border);
         border-radius: 10px;
@@ -89,6 +95,13 @@
         width: auto;
         padding: 6px 10px;
         font-size: 12px;
+        margin-right: 8px;
+      }
+      .danger {
+        background: #dc2626;
+      }
+      .warn {
+        color: #b45309;
       }
       @media (max-width: 700px) {
         .container { margin-top: 20px; }
@@ -143,13 +156,21 @@
         </div>
         <label for="content">内容</label>
         <textarea id="content" placeholder="输入 Markdown 或 LaTeX"></textarea>
+        <div class="preview-title">编辑预览（支持 Markdown + LaTeX 混排）</div>
+        <div id="editorPreview" class="render"></div>
+        <p id="editState" class="warn"></p>
         <div class="row" style="margin-top:12px;">
           <div class="half"><button id="publishBtn">发布并生成编码</button></div>
+          <div class="half"><button id="cancelEditBtn" class="ghost" style="display:none;">取消编辑</button></div>
+          <div class="half"><button id="previewBtn" class="ghost">刷新预览</button></div>
         </div>
         <p id="publishMsg" class="muted"></p>
         <div id="codeWrap" style="display:none;">
           <p>请保存这个编码串（丢失后无法找回）：</p>
           <div class="code-box" id="codeBox"></div>
+          <div class="row" style="margin-top:12px;">
+            <div class="half"><button id="copyPreviewLinkBtn" class="ghost">复制预览链接</button></div>
+          </div>
         </div>
       </div>
 
@@ -168,10 +189,12 @@
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" defer crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" defer crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
     <script>
       let supabaseClient = null;
       let accessToken = '';
+      let editingCode = '';
 
       const authMsg = document.getElementById('authMsg');
       const authUser = document.getElementById('authUser');
@@ -180,30 +203,131 @@
       const mineList = document.getElementById('mineList');
 
       const publishBtn = document.getElementById('publishBtn');
+      const previewBtn = document.getElementById('previewBtn');
+      const cancelEditBtn = document.getElementById('cancelEditBtn');
+      const copyPreviewLinkBtn = document.getElementById('copyPreviewLinkBtn');
+      const editState = document.getElementById('editState');
       const publishMsg = document.getElementById('publishMsg');
       const codeWrap = document.getElementById('codeWrap');
       const codeBox = document.getElementById('codeBox');
+      const editorPreview = document.getElementById('editorPreview');
 
       const openBtn = document.getElementById('openBtn');
       const openMsg = document.getElementById('openMsg');
       const meta = document.getElementById('meta');
       const render = document.getElementById('render');
 
-      function renderContent(content, format) {
-        if (format === 'markdown') {
-          render.innerHTML = marked.parse(content, { breaks: true, gfm: true });
+      function renderMath(container) {
+        if (!window.renderMathInElement) {
+          setTimeout(() => {
+            if (window.renderMathInElement) {
+              renderMath(container);
+            }
+          }, 120);
           return;
         }
-        render.innerHTML = '';
-        try {
-          katex.render(content, render, { throwOnError: false, displayMode: true });
-        } catch (e) {
-          render.textContent = content;
+        window.renderMathInElement(container, {
+          throwOnError: false,
+          delimiters: [
+            { left: '$$', right: '$$', display: true },
+            { left: '$', right: '$', display: false },
+            { left: '\\(', right: '\\)', display: false },
+            { left: '\\[', right: '\\]', display: true }
+          ]
+        });
+      }
+
+      function renderMixedContent(container, content, format) {
+        if (format === 'latex') {
+          container.innerHTML = '';
+          try {
+            katex.render(content, container, { throwOnError: false, displayMode: true });
+          } catch (e) {
+            container.textContent = content;
+          }
+          return;
         }
+
+        container.innerHTML = marked.parse(content, { breaks: true, gfm: true });
+        renderMath(container);
+      }
+
+      function renderContent(content, format) {
+        renderMixedContent(render, content, format);
+      }
+
+      function refreshEditorPreview() {
+        const content = document.getElementById('content').value.trim();
+        const format = document.getElementById('format').value;
+        if (!content) {
+          editorPreview.innerHTML = '<span class="muted">预览区：输入内容后会显示渲染结果</span>';
+          return;
+        }
+        renderMixedContent(editorPreview, content, format);
+      }
+
+      function previewUrlByCode(code) {
+        return `${window.location.origin}${window.location.pathname}?code=${encodeURIComponent(code)}`;
       }
 
       function authHeaders() {
         return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+      }
+
+      function setCreateMode() {
+        editingCode = '';
+        editState.textContent = '';
+        cancelEditBtn.style.display = 'none';
+        publishBtn.textContent = '发布并生成编码';
+      }
+
+      function setEditMode(code) {
+        editingCode = code;
+        editState.textContent = `当前编辑: ${code}`;
+        cancelEditBtn.style.display = 'block';
+        publishBtn.textContent = '保存修改';
+      }
+
+      async function startEdit(code) {
+        try {
+          const res = await fetch(`/api/get?code=${encodeURIComponent(code)}`);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '加载失败');
+
+          document.getElementById('format').value = data.format;
+          document.getElementById('content').value = data.content;
+          refreshEditorPreview();
+          setEditMode(code);
+          publishMsg.textContent = '';
+          codeWrap.style.display = 'none';
+        } catch (err) {
+          mineMsg.textContent = err.message;
+        }
+      }
+
+      async function deleteMine(code) {
+        const ok = window.confirm(`确认删除 ${code} 吗？删除后不可恢复。`);
+        if (!ok) return;
+
+        mineMsg.textContent = '删除中...';
+        try {
+          const res = await fetch(`/api/delete?code=${encodeURIComponent(code)}`, {
+            method: 'DELETE',
+            headers: authHeaders()
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || '删除失败');
+
+          if (editingCode === code) {
+            setCreateMode();
+            document.getElementById('content').value = '';
+          }
+
+          mineMsg.textContent = '删除成功';
+          loadMyClipboards();
+        } catch (err) {
+          mineMsg.textContent = err.message;
+        }
       }
 
       async function loadMyClipboards() {
@@ -235,15 +359,27 @@
               <div class="muted">格式: ${item.format} | 创建时间: ${new Date(item.created_at).toLocaleString()}</div>
             `;
 
-            const btn = document.createElement('button');
-            btn.className = 'inline-btn';
-            btn.textContent = '打开';
-            btn.addEventListener('click', () => {
+            const openBtnItem = document.createElement('button');
+            openBtnItem.className = 'inline-btn';
+            openBtnItem.textContent = '打开';
+            openBtnItem.addEventListener('click', () => {
               document.getElementById('codeInput').value = item.code;
               openBtn.click();
             });
 
-            div.appendChild(btn);
+            const editBtn = document.createElement('button');
+            editBtn.className = 'inline-btn ghost';
+            editBtn.textContent = '编辑';
+            editBtn.addEventListener('click', () => startEdit(item.code));
+
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'inline-btn danger';
+            deleteBtn.textContent = '删除';
+            deleteBtn.addEventListener('click', () => deleteMine(item.code));
+
+            div.appendChild(openBtnItem);
+            div.appendChild(editBtn);
+            div.appendChild(deleteBtn);
             mineList.appendChild(div);
           });
         } catch (err) {
@@ -258,6 +394,7 @@
           loadMyClipboards();
         } else {
           authUser.textContent = '未登录';
+          setCreateMode();
           mineMsg.textContent = '';
           mineList.innerHTML = '';
           myWrap.style.display = 'none';
@@ -323,6 +460,25 @@
       });
 
       document.getElementById('refreshMineBtn').addEventListener('click', loadMyClipboards);
+      previewBtn.addEventListener('click', refreshEditorPreview);
+      cancelEditBtn.addEventListener('click', () => {
+        setCreateMode();
+        publishMsg.textContent = '';
+        refreshEditorPreview();
+      });
+      copyPreviewLinkBtn.addEventListener('click', async () => {
+        const code = codeBox.textContent.trim();
+        if (!code) return;
+        const url = previewUrlByCode(code);
+        try {
+          await navigator.clipboard.writeText(url);
+          publishMsg.textContent = '预览链接已复制';
+        } catch (_err) {
+          publishMsg.textContent = `预览链接: ${url}`;
+        }
+      });
+      document.getElementById('content').addEventListener('input', refreshEditorPreview);
+      document.getElementById('format').addEventListener('change', refreshEditorPreview);
 
       publishBtn.addEventListener('click', async () => {
         const content = document.getElementById('content').value.trim();
@@ -337,18 +493,32 @@
         codeWrap.style.display = 'none';
 
         try {
-          const res = await fetch('/api/create', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
-            body: JSON.stringify({ content, format })
-          });
+          if (editingCode) {
+            const res = await fetch('/api/update', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', ...authHeaders() },
+              body: JSON.stringify({ code: editingCode, content, format })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '更新失败');
 
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error || '发布失败');
+            codeWrap.style.display = 'none';
+            publishMsg.textContent = `更新成功: ${data.item.code}`;
+            loadMyClipboards();
+          } else {
+            const res = await fetch('/api/create', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...authHeaders() },
+              body: JSON.stringify({ content, format })
+            });
 
-          codeBox.textContent = data.code;
-          codeWrap.style.display = 'block';
-          publishMsg.textContent = accessToken ? '发布成功（已归属到当前账号）' : '发布成功（未登录，未归属账号）';
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || '发布失败');
+
+            codeBox.textContent = data.code;
+            codeWrap.style.display = 'block';
+            publishMsg.textContent = accessToken ? '发布成功（已归属到当前账号）' : '发布成功（未登录，未归属账号）';
+          }
 
           if (accessToken) {
             loadMyClipboards();
@@ -383,6 +553,14 @@
       });
 
       initAuth();
+      setCreateMode();
+      refreshEditorPreview();
+
+      const initCode = new URLSearchParams(window.location.search).get('code');
+      if (initCode) {
+        document.getElementById('codeInput').value = initCode;
+        openBtn.click();
+      }
     </script>
   </body>
 </html>
