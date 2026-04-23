@@ -22,7 +22,7 @@ exports.handler = async (event) => {
 
     const { data, error } = await supabase
       .from(TABLE_NAME)
-      .select('code,format,created_at')
+      .select('code,title,format,created_at,password_hash')
       .eq('owner_id', user.id)
       .order('created_at', { ascending: false });
 
@@ -32,7 +32,15 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ items: data || [] })
+      body: JSON.stringify({
+        items: (data || []).map((item) => ({
+          code: item.code,
+          title: item.title || '',
+          format: item.format,
+          created_at: item.created_at,
+          password_protected: Boolean(item.password_hash)
+        }))
+      })
     };
   } catch (error) {
     return {
