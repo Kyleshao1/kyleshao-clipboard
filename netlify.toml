@@ -31,3 +31,13 @@
   from = "/api/delete"
   to = "/.netlify/functions/delete-clipboard"
   status = 200
+
+[[redirects]]
+  from = "/api/kydev/callback"
+  to = "/.netlify/functions/kydev-callback"
+  status = 200
+
+[[redirects]]
+  from = "/api/ai"
+  to = "/.netlify/functions/ai-minimax"
+  status = 200
