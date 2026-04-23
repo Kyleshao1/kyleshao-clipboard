@@ -1,3 +1,6 @@
+const crypto = require('node:crypto');
+const { supabase } = require('./_lib/supabase');
+
 exports.handler = async (event) => {
   if (event.httpMethod !== 'GET') {
     return { statusCode: 405, body: 'Method Not Allowed' };
@@ -39,8 +42,39 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: 'Missing access_token' };
   }
 
+  let merged = false;
+  try {
+    const userResp = await fetch(`${issuer}/api/oauth-userinfo`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (userResp.ok) {
+      const profile = await userResp.json();
+      const { data: listData } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      const users = listData?.users || [];
+      const matched =
+        users.find((u) => u.email && profile.email && u.email.toLowerCase() === String(profile.email).toLowerCase()) ||
+        users.find((u) => u.user_metadata?.username && u.user_metadata.username === profile.username) ||
+        null;
+
+      if (matched) {
+        merged = true;
+      } else {
+        const password = crypto.randomBytes(16).toString('hex');
+        await supabase.auth.admin.createUser({
+          email: profile.email,
+          password,
+          email_confirm: true,
+          user_metadata: { username: profile.username }
+        });
+      }
+    }
+  } catch (_err) {
+    merged = false;
+  }
+
   const url = new URL(`https://${event.headers.host}/`);
   url.searchParams.set('token', accessToken);
+  if (merged) url.searchParams.set('merge', '1');
 
   return {
     statusCode: 302,
