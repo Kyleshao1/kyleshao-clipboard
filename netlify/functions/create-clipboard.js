@@ -1,6 +1,7 @@
 const crypto = require('node:crypto');
 const { supabase } = require('./_lib/supabase');
 const { getUserFromEvent } = require('./_lib/auth');
+const { hashPassword } = require('./_lib/password');
 
 const TABLE_NAME = 'cloud_clipboards';
 const CODE_LENGTH = 24;
@@ -27,11 +28,21 @@ exports.handler = async (event) => {
     const user = await getUserFromEvent(event);
     const payload = JSON.parse(event.body || '{}');
     const { content, format } = payload;
+    const title = typeof payload.title === 'string' ? payload.title.trim() : '';
+    const passwordEnabled = Boolean(payload.passwordEnabled);
+    const password = typeof payload.password === 'string' ? payload.password : '';
 
     if (!content || typeof content !== 'string') {
       return {
         statusCode: 400,
         body: JSON.stringify({ error: 'content is required' })
+      };
+    }
+
+    if (title.length > 120) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: 'title is too long' })
       };
     }
 
@@ -42,6 +53,17 @@ exports.handler = async (event) => {
       };
     }
 
+    let passwordHash = null;
+    if (passwordEnabled) {
+      if (!password || password.length < 4 || password.length > 64) {
+        return {
+          statusCode: 400,
+          body: JSON.stringify({ error: 'password must be 4-64 characters' })
+        };
+      }
+      passwordHash = hashPassword(password);
+    }
+
     let code = '';
     let inserted = null;
 
@@ -49,7 +71,14 @@ exports.handler = async (event) => {
       code = randomCode();
       const { data, error } = await supabase
         .from(TABLE_NAME)
-        .insert({ code, content, format, owner_id: user?.id || null })
+        .insert({
+          code,
+          title,
+          content,
+          format,
+          password_hash: passwordHash,
+          owner_id: user?.id || null
+        })
         .select('code')
         .single();
 
