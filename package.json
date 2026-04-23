@@ -8,7 +8,8 @@
     "build": "echo 'No build step required'"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.8"
+    "@supabase/supabase-js": "^2.49.8",
+    "bcryptjs": "^2.4.3"
   },
   "devDependencies": {
     "netlify-cli": "^17.38.0"
