@@ -1,5 +1,6 @@
 const { supabase } = require('./_lib/supabase');
 const { getUserFromEvent } = require('./_lib/auth');
+const { hashPassword } = require('./_lib/password');
 
 const TABLE_NAME = 'cloud_clipboards';
 
@@ -22,6 +23,9 @@ exports.handler = async (event) => {
 
     const payload = JSON.parse(event.body || '{}');
     const { code, content, format } = payload;
+    const title = typeof payload.title === 'string' ? payload.title.trim() : undefined;
+    const passwordEnabled = typeof payload.passwordEnabled === 'boolean' ? payload.passwordEnabled : undefined;
+    const password = typeof payload.password === 'string' ? payload.password : '';
 
     if (!code || typeof code !== 'string' || code.length < 8) {
       return {
@@ -37,6 +41,13 @@ exports.handler = async (event) => {
       };
     }
 
+    if (typeof title === 'string' && title.length > 120) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: 'title is too long' })
+      };
+    }
+
     if (!['markdown', 'latex'].includes(format)) {
       return {
         statusCode: 400,
@@ -46,7 +57,7 @@ exports.handler = async (event) => {
 
     const { data: current, error: queryError } = await supabase
       .from(TABLE_NAME)
-      .select('code,owner_id')
+      .select('code,owner_id,password_hash')
       .eq('code', code)
       .maybeSingle();
 
@@ -75,12 +86,36 @@ exports.handler = async (event) => {
       };
     }
 
+    const updateFields = { content, format };
+    if (typeof title === 'string') {
+      updateFields.title = title;
+    }
+
+    if (passwordEnabled === true) {
+      if (password) {
+        if (password.length < 4 || password.length > 64) {
+          return {
+            statusCode: 400,
+            body: JSON.stringify({ error: 'password must be 4-64 characters' })
+          };
+        }
+        updateFields.password_hash = hashPassword(password);
+      } else if (!current.password_hash) {
+        return {
+          statusCode: 400,
+          body: JSON.stringify({ error: 'password is required to enable protection' })
+        };
+      }
+    } else if (passwordEnabled === false) {
+      updateFields.password_hash = null;
+    }
+
     const { data: updated, error: updateError } = await supabase
       .from(TABLE_NAME)
-      .update({ content, format })
+      .update(updateFields)
       .eq('code', code)
       .eq('owner_id', user.id)
-      .select('code,format,created_at')
+      .select('code,title,format,created_at,password_hash')
       .single();
 
     if (updateError) {
@@ -89,7 +124,15 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ item: updated })
+      body: JSON.stringify({
+        item: {
+          code: updated.code,
+          title: updated.title || '',
+          format: updated.format,
+          created_at: updated.created_at,
+          password_protected: Boolean(updated.password_hash)
+        }
+      })
     };
   } catch (error) {
     return {
