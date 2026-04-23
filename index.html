@@ -103,6 +103,19 @@
       .warn {
         color: #b45309;
       }
+      .checkbox {
+        width: auto;
+      }
+      dialog {
+        width: min(860px, calc(100vw - 28px));
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 18px;
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+      }
+      dialog::backdrop {
+        background: rgba(15, 23, 42, 0.55);
+      }
       @media (max-width: 700px) {
         .container { margin-top: 20px; }
       }
@@ -147,6 +160,10 @@
         <h2>发布剪贴板</h2>
         <div class="row">
           <div class="half">
+            <label for="title">标题（可选）</label>
+            <input id="title" placeholder="例如：会议纪要 / TODO / 代码片段说明" />
+          </div>
+          <div class="half">
             <label for="format">内容类型</label>
             <select id="format">
               <option value="markdown">Markdown</option>
@@ -158,12 +175,32 @@
         <textarea id="content" placeholder="输入 Markdown 或 LaTeX"></textarea>
         <div class="preview-title">编辑预览（支持 Markdown + LaTeX 混排）</div>
         <div id="editorPreview" class="render"></div>
+        <div class="row" style="margin-top:12px;">
+          <div class="half">
+            <label>
+              <input id="passwordEnabled" class="checkbox" type="checkbox" />
+              开启访问密码（访问时需要输入）
+            </label>
+          </div>
+          <div class="half" id="passwordRow" style="display:none;">
+            <input id="clipboardPassword" type="password" placeholder="设置密码（4-64）" />
+            <div class="muted" style="font-size: 12px; margin-top: 6px;">
+              编辑时留空表示不修改现有密码
+            </div>
+          </div>
+        </div>
         <p id="editState" class="warn"></p>
         <div class="row" style="margin-top:12px;">
           <div class="half"><button id="publishBtn">发布并生成编码</button></div>
           <div class="half"><button id="cancelEditBtn" class="ghost" style="display:none;">取消编辑</button></div>
           <div class="half"><button id="previewBtn" class="ghost">刷新预览</button></div>
         </div>
+        <div class="preview-title">AI（MiniMax）</div>
+        <textarea id="aiQuestion" style="min-height: 90px;" placeholder="例如：帮我把当前内容整理成一篇结构清晰的 Markdown，包含要点列表和结论"></textarea>
+        <div class="row" style="margin-top:12px;">
+          <div class="half"><button id="askAiBtn" class="ghost">询问 AI（返回 Markdown）</button></div>
+        </div>
+        <p id="aiMsg" class="muted"></p>
         <p id="publishMsg" class="muted"></p>
         <div id="codeWrap" style="display:none;">
           <p>请保存这个编码串（丢失后无法找回）：</p>
@@ -187,6 +224,15 @@
       </div>
     </div>
 
+    <dialog id="aiDialog">
+      <h2 style="margin-top:0;">AI 回复（Markdown）</h2>
+      <div id="aiPreview" class="render"></div>
+      <div class="row" style="margin-top:12px;">
+        <div class="half"><button id="applyAiBtn">应用到编辑框</button></div>
+        <div class="half"><button id="rejectAiBtn" class="ghost">拒绝</button></div>
+      </div>
+    </dialog>
+
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" defer crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" defer crossorigin="anonymous"></script>
@@ -196,6 +242,22 @@
       let accessToken = '';
       let editingCode = '';
       let mineLoadSeq = 0;
+      const clipboardPasswords = new Map();
+      let lastAiMarkdown = '';
+      const oauthParams = new URLSearchParams(window.location.search);
+      const oauthToken = oauthParams.get('token');
+      if (oauthToken) {
+        localStorage.setItem('kydev_token', oauthToken);
+        if (oauthParams.get('merge') === '1') {
+          alert('检测到同名账号，已自动合并。');
+        }
+        const cleanParams = new URLSearchParams(window.location.search);
+        cleanParams.delete('token');
+        cleanParams.delete('merge');
+        const cleanSearch = cleanParams.toString();
+        const nextUrl = `${window.location.pathname}${cleanSearch ? `?${cleanSearch}` : ''}${window.location.hash}`;
+        history.replaceState(null, '', nextUrl);
+      }
 
       const authMsg = document.getElementById('authMsg');
       const authUser = document.getElementById('authUser');
@@ -212,11 +274,30 @@
       const codeWrap = document.getElementById('codeWrap');
       const codeBox = document.getElementById('codeBox');
       const editorPreview = document.getElementById('editorPreview');
+      const aiQuestion = document.getElementById('aiQuestion');
+      const askAiBtn = document.getElementById('askAiBtn');
+      const aiMsg = document.getElementById('aiMsg');
+      const aiDialog = document.getElementById('aiDialog');
+      const aiPreview = document.getElementById('aiPreview');
+      const applyAiBtn = document.getElementById('applyAiBtn');
+      const rejectAiBtn = document.getElementById('rejectAiBtn');
+      const passwordEnabled = document.getElementById('passwordEnabled');
+      const passwordRow = document.getElementById('passwordRow');
+      const clipboardPassword = document.getElementById('clipboardPassword');
 
       const openBtn = document.getElementById('openBtn');
       const openMsg = document.getElementById('openMsg');
       const meta = document.getElementById('meta');
       const render = document.getElementById('render');
+
+      function escapeHtml(value) {
+        return String(value || '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
 
       function renderMath(container) {
         if (!window.renderMathInElement) {
@@ -272,7 +353,9 @@
       }
 
       function authHeaders() {
-        return accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+        const kydevToken = localStorage.getItem('kydev_token');
+        const token = kydevToken || accessToken;
+        return token ? { Authorization: `Bearer ${token}` } : {};
       }
 
       async function apiFetchJson(url, options) {
@@ -307,6 +390,10 @@
         editState.textContent = '';
         cancelEditBtn.style.display = 'none';
         publishBtn.textContent = '发布并生成编码';
+        document.getElementById('title').value = '';
+        passwordEnabled.checked = false;
+        passwordRow.style.display = 'none';
+        clipboardPassword.value = '';
       }
 
       function setEditMode(code) {
@@ -318,10 +405,20 @@
 
       async function startEdit(code) {
         try {
-          const data = await apiFetchJson(`/api/get?code=${encodeURIComponent(code)}`);
+          const data = await apiFetchJson(`/api/get?code=${encodeURIComponent(code)}`, {
+            headers: authHeaders()
+          });
+
+          if (data.passwordRequired) {
+            throw new Error('该剪贴板已加密，需登录为创建者才可编辑');
+          }
 
           document.getElementById('format').value = data.format;
           document.getElementById('content').value = data.content;
+          document.getElementById('title').value = data.title || '';
+          passwordEnabled.checked = Boolean(data.password_protected);
+          passwordRow.style.display = passwordEnabled.checked ? 'block' : 'none';
+          clipboardPassword.value = '';
           refreshEditorPreview();
           setEditMode(code);
           publishMsg.textContent = '';
@@ -384,9 +481,12 @@
           data.items.forEach((item) => {
             const div = document.createElement('div');
             div.className = 'list-item';
+
+            const protectedTag = item.password_protected ? ' 🔒' : '';
+            const titleText = item.title ? escapeHtml(item.title) : '<span class="muted">（无标题）</span>';
             div.innerHTML = `
-              <div><strong>${item.code}</strong></div>
-              <div class="muted">格式: ${item.format} | 创建时间: ${new Date(item.created_at).toLocaleString()}</div>
+              <div><strong>${titleText}</strong>${protectedTag}</div>
+              <div class="muted">编码: ${item.code} | 格式: ${item.format} | 创建时间: ${new Date(item.created_at).toLocaleString()}</div>
             `;
 
             const openBtnItem = document.createElement('button');
@@ -437,6 +537,15 @@
           const conf = await apiFetchJson('/api/config');
 
           supabaseClient = window.supabase.createClient(conf.supabaseUrl, conf.supabasePublishableKey);
+
+          const kydevToken = localStorage.getItem('kydev_token');
+          if (kydevToken) {
+            accessToken = kydevToken;
+            authUser.textContent = '已通过 kyleshao-dev 登录';
+            authMsg.textContent = '';
+            loadMyClipboards();
+            return;
+          }
 
           const { data } = await supabaseClient.auth.getSession();
           setSession(data.session);
@@ -508,10 +617,76 @@
       });
       document.getElementById('content').addEventListener('input', refreshEditorPreview);
       document.getElementById('format').addEventListener('change', refreshEditorPreview);
+      passwordEnabled.addEventListener('change', () => {
+        passwordRow.style.display = passwordEnabled.checked ? 'block' : 'none';
+        if (!passwordEnabled.checked) {
+          clipboardPassword.value = '';
+        }
+      });
+
+      function insertTextAtCursor(textarea, text) {
+        const start = textarea.selectionStart ?? textarea.value.length;
+        const end = textarea.selectionEnd ?? textarea.value.length;
+        textarea.setRangeText(text, start, end, 'end');
+        textarea.focus();
+      }
+
+      async function askAi() {
+        if (!accessToken && !localStorage.getItem('kydev_token')) {
+          aiMsg.textContent = '请先登录后再使用 AI 功能';
+          return;
+        }
+
+        const question = aiQuestion.value.trim();
+        if (!question) {
+          aiMsg.textContent = '请先输入要问 AI 的问题';
+          return;
+        }
+
+        const content = document.getElementById('content').value.trim();
+        const format = document.getElementById('format').value;
+        const title = document.getElementById('title').value.trim();
+
+        aiMsg.textContent = '生成中...';
+        askAiBtn.disabled = true;
+        try {
+          const data = await apiFetchJson('/api/ai', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ question, content, format, title })
+          });
+
+          lastAiMarkdown = data.markdown || '';
+          aiPreview.innerHTML = marked.parse(lastAiMarkdown, { breaks: true, gfm: true });
+          renderMath(aiPreview);
+          aiDialog.showModal();
+          aiMsg.textContent = '';
+        } catch (err) {
+          aiMsg.textContent = err.message;
+        } finally {
+          askAiBtn.disabled = false;
+        }
+      }
+
+      askAiBtn.addEventListener('click', askAi);
+      rejectAiBtn.addEventListener('click', () => aiDialog.close());
+      applyAiBtn.addEventListener('click', () => {
+        const textarea = document.getElementById('content');
+        if (!lastAiMarkdown) {
+          aiDialog.close();
+          return;
+        }
+        insertTextAtCursor(textarea, lastAiMarkdown);
+        refreshEditorPreview();
+        aiDialog.close();
+      });
 
       publishBtn.addEventListener('click', async () => {
         const content = document.getElementById('content').value.trim();
         const format = document.getElementById('format').value;
+        const title = document.getElementById('title').value.trim();
+        const passwordEnabledValue = passwordEnabled.checked;
+        const passwordValue = clipboardPassword.value;
 
         if (!content) {
           publishMsg.textContent = '内容不能为空';
@@ -528,23 +703,38 @@
               {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json', ...authHeaders() },
-                body: JSON.stringify({ code: editingCode, content, format })
+                body: JSON.stringify({
+                  code: editingCode,
+                  title,
+                  content,
+                  format,
+                  passwordEnabled: passwordEnabledValue,
+                  password: passwordValue
+                })
               }
             );
 
             codeWrap.style.display = 'none';
             publishMsg.textContent = `更新成功: ${data.item.code}`;
+            clipboardPassword.value = '';
             loadMyClipboards();
           } else {
             const data = await apiFetchJson('/api/create', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', ...authHeaders() },
-              body: JSON.stringify({ content, format })
+              body: JSON.stringify({
+                title,
+                content,
+                format,
+                passwordEnabled: passwordEnabledValue,
+                password: passwordValue
+              })
             });
 
             codeBox.textContent = data.code;
             codeWrap.style.display = 'block';
             publishMsg.textContent = accessToken ? '发布成功（已归属到当前账号）' : '发布成功（未登录，未归属账号）';
+            clipboardPassword.value = '';
           }
 
           if (accessToken) {
@@ -554,6 +744,15 @@
           publishMsg.textContent = err.message;
         }
       });
+
+      async function getClipboard(code) {
+        const headers = { ...authHeaders() };
+        const pw = clipboardPasswords.get(code);
+        if (pw) {
+          headers['X-Clipboard-Password'] = pw;
+        }
+        return await apiFetchJson(`/api/get?code=${encodeURIComponent(code)}`, { headers });
+      }
 
       openBtn.addEventListener('click', async () => {
         const code = document.getElementById('codeInput').value.trim();
@@ -567,10 +766,29 @@
         render.innerHTML = '';
 
         try {
-          const data = await apiFetchJson(`/api/get?code=${encodeURIComponent(code)}`);
+          let data = await getClipboard(code);
+          if (data.passwordRequired) {
+            const pw = window.prompt(
+              data.error === 'Invalid password'
+                ? '密码错误，请重新输入密码'
+                : '该剪贴板已加密，请输入访问密码'
+            );
+            if (!pw) {
+              openMsg.textContent = '已取消（需要密码才能访问）';
+              return;
+            }
+            clipboardPasswords.set(code, pw);
+            data = await getClipboard(code);
+            if (data.passwordRequired) {
+              openMsg.textContent = data.error ? '密码错误' : '需要密码才能访问';
+              return;
+            }
+          }
 
           renderContent(data.content, data.format);
-          meta.textContent = `格式: ${data.format} | 创建时间: ${new Date(data.created_at).toLocaleString()}`;
+          const title = data.title ? `标题: ${data.title} | ` : '';
+          const protectedTag = data.password_protected ? ' | 🔒已加密' : '';
+          meta.textContent = `${title}格式: ${data.format} | 创建时间: ${new Date(data.created_at).toLocaleString()}${protectedTag}`;
           openMsg.textContent = '';
         } catch (err) {
           openMsg.textContent = err.message;
